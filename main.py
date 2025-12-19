@@ -5,44 +5,35 @@ import os
 import re
 from bs4 import BeautifulSoup
 import time
+import hashlib
 
 # --- 設定エリア ---
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 DATA_FILE = "data.json"
 
-# 質の高い情報源リスト（ここを増やすと情報が増えます）
+# ブラウザのふりをするヘッダー
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+}
+
+# 巡回リスト（前回と同じ最強リスト）
 RSS_URLS = [
-    # --- 【最強】公式プレスリリース（ここが一番早いです） ---
-    # 飲食・グルメのキャンペーン・クーポン（マック、スタバ、回転寿司など）
     "https://prtimes.jp/gourmet.rdf",
-    # テクノロジー・ガジェット・アプリのセール情報
     "https://prtimes.jp/technology.rdf",
     "https://prtimes.jp/app.rdf",
-    # エンタメ・ゲームの無料配布やキャンペーン
     "https://prtimes.jp/entertainment.rdf",
-
-    # --- 【厳選】ガジェット・PC・Amazonセール系 ---
-    # Apple製品やAmazonセールの速報に強い
     "https://touchlab.jp/feed/",
-    # ガジェット全般、タイムセール情報
     "https://www.gizmodo.jp/index.xml",
-    # PC・スマホの特価情報、アプリセール
     "https://corriente.top/feed/",
-    # 仕事効率化・ライフハック系（ソフトのセールなど）
     "https://www.lifehacker.jp/feed/index.xml",
-
-    # --- 【生活】飲食・サブカル・激安系 ---
-    # ロケットニュース24（「〜食べ放題」「激安」などの体験記事が多い）
     "https://rocketnews24.com/feed/",
-    # ゲームの無料配布（Epic Gamesなど）やSteamセール情報
     "https://automaton-media.com/feed/",
 ]
 
-# 収集対象とするキーワード（これらがタイトルに含まれる場合のみ通知）
-# キーワードを「激安」「無料」系に特化
 TARGET_KEYWORDS = [
     "クーポン", "コード", "半額", "セール", "無料", "割引", 
-    "キャンペーン", "激安", "特価", "配布", "円OFF", "ポイント"
+    "キャンペーン", "激安", "特価", "配布", "円OFF", "ポイント",
+    "発売", "開始", "登場", "プレゼント"
 ]
 
 def load_sent_data():
@@ -55,109 +46,153 @@ def load_sent_data():
     return []
 
 def save_sent_data(data):
-    # 最新200件だけ保持
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data[-200:], f, ensure_ascii=False, indent=2)
+        json.dump(data[-300:], f, ensure_ascii=False, indent=2)
+
+def extract_image(entry):
+    """RSSから画像URLを抜き出す"""
+    # 1. media_content (PR Timesなど)
+    if 'media_content' in entry and len(entry.media_content) > 0:
+        return entry.media_content[0]['url']
+    # 2. links (一部のブログ)
+    if 'links' in entry:
+        for link in entry.links:
+            if link.get('type', '').startswith('image'):
+                return link['href']
+    # 3. description内のimgタグ
+    if 'summary' in entry:
+        soup = BeautifulSoup(entry.summary, 'html.parser')
+        img = soup.find('img')
+        if img and img.get('src'):
+            return img['src']
+    return None
 
 def extract_coupon_code(text):
     """
-    テキストからクーポンコードらしきものを抽出する強化版ロジック
+    コード抽出ロジック（厳しめに判定し、ゴミを排除）
     """
-    # 1. 「コード」「クーポン」の後ろにある英数字を優先的に探す
-    # 例: "クーポンコード: SPECIAL2024" -> SPECIAL2024 を抜く
-    keyword_pattern = r'(?:コード|クーポン|key)[：:]?\s*([a-zA-Z0-9\-_]{4,20})'
-    match = re.search(keyword_pattern, text)
+    # 明確なキーワード指定がある場合
+    keyword_pattern = r'(?:クーポン|コード|Key|ID)[:：]\s*([a-zA-Z0-9\-_]{4,20})'
+    match = re.search(keyword_pattern, text, re.IGNORECASE)
     if match:
         code = match.group(1)
-        # 除外ワード（日付やHTTPなど）でなければ採用
-        if not re.search(r'(202[0-9]|http)', code):
+        if not re.search(r'(202[0-9]|http|jpg|png)', code):
             return code
 
-    # 2. 見つからない場合、汎用的な大文字英数字を探す
-    general_pattern = r'\b[A-Z][A-Z0-9]{3,15}\b'
+    # Amazonなどでよくある「大文字英数字の羅列」
+    # 条件: 6文字以上、全部大文字、英字と数字が混ざっていること
+    general_pattern = r'\b(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*[0-9])[A-Z0-9]{6,15}\b'
     matches = re.findall(general_pattern, text)
     
-    # ノイズ除去（よく誤検知される単語）
-    ignore_list = ["HTTP", "HTTPS", "HTML", "AMAZON", "SALE", "FREE", "WIFI", "2024", "2025"]
-    
+    ignore_list = ["IPHONE", "ANDROID", "WINDOWS", "TOKYO", "JAPAN", "UPDATE"]
     for m in matches:
         if m not in ignore_list and not m.startswith("202"):
             return m
             
-    return "コード記載なし/リンク先確認"
+    return None # 見つからない場合はNoneを返す
 
-def send_discord(title, code, link, source_name):
-    payload = {
-        "content": (
-            f"**{source_name}** で情報を検知！\n"
-            f"商品: {title}\n"
-            f"コード: ```{code}```\n"
-            f"⬇️ [参照リンク]({link})"
-        )
+def get_color(source_name):
+    """サイトごとに色を変える"""
+    name = source_name.lower()
+    if "pr times" in name: return 0x1E90FF # Blue
+    if "gizmodo" in name: return 0xFFD700 # Gold
+    if "touch" in name: return 0xFF69B4 # Pink
+    if "rocket" in name: return 0xDC143C # Red
+    return 0x00FA9A # Default Green
+
+def send_discord_embed(title, code, link, source_name, image_url, date_str):
+    """リッチなEmbed形式で送信"""
+    
+    # 説明文の作成
+    description = ""
+    if code:
+        description = f"🔥 **激アツ！クーポンコード発見**\n```{code}```\nここからコピーして使ってね！"
+        color = 0xFF0000 # 赤（強調）
+    else:
+        description = "👇 **セール・キャンペーン詳細**\nコードは不要、もしくはリンク先でチェック！"
+        color = get_color(source_name)
+
+    embed = {
+        "title": title,
+        "url": link,
+        "description": description,
+        "color": color,
+        "footer": {
+            "text": f"{source_name} • {date_str}"
+        }
     }
+
+    if image_url:
+        embed["image"] = {"url": image_url}
+
+    payload = {
+        "username": "激安ハンターBot",
+        "embeds": [embed]
+    }
+
     try:
         requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        time.sleep(1) # 連投制限対策
+        time.sleep(2)
     except Exception as e:
         print(f"Discord send error: {e}")
 
 def main():
+    if not DISCORD_WEBHOOK_URL:
+        print("Webhook URL error")
+        return
+
     sent_urls = load_sent_data()
     new_sent_urls = sent_urls.copy()
     
-    print("巡回開始...")
+    print("Fetching feeds...")
 
     for rss_url in RSS_URLS:
         try:
-            print(f"Checking: {rss_url}")
-            feed = feedparser.parse(rss_url)
+            resp = requests.get(rss_url, headers=HEADERS, timeout=10)
+            feed = feedparser.parse(resp.content)
             
-            for entry in feed.entries[:10]: # 各サイト最新10件をチェック
+            source_name = feed.feed.title if 'title' in feed.feed else "News"
+            print(f"Checking: {source_name}")
+
+            for entry in feed.entries[:5]: # 最新5件
                 link = entry.link
                 title = entry.title
                 
-                # すでに送信済みならスキップ
-                if link in sent_urls:
-                    continue
+                # 重複チェック
+                if link in sent_urls: continue
 
-                # フィルタリング: キーワードが含まれているか確認
-                if not any(k in title for k in TARGET_KEYWORDS):
-                    continue
+                # キーワードチェック
+                if not any(k in title for k in TARGET_KEYWORDS): continue
 
-                # 詳細情報の取得（Descriptionからコードを探す）
-                # feedparserは description や content を持っています
+                print(f"  -> HIT: {title}")
+
+                # 本文解析
                 description = ""
-                if 'content' in entry:
-                    description = entry.content[0].value
-                elif 'summary' in entry:
-                    description = entry.summary
-                else:
-                    description = title
-
-                # HTMLタグを除去してテキスト化
+                if 'content' in entry: description = entry.content[0].value
+                elif 'summary' in entry: description = entry.summary
+                else: description = title
+                
                 soup = BeautifulSoup(description, "html.parser")
                 text_content = soup.get_text()
-
-                # コード抽出
-                code = extract_coupon_code(text_content)
                 
-                # 情報源の名前（ドメインなど）
-                source_name = feed.feed.title if 'title' in feed.feed else "News"
+                # 情報抽出
+                code = extract_coupon_code(text_content)
+                image_url = extract_image(entry)
+                
+                # 日付
+                date_str = time.strftime('%Y-%m-%d %H:%M')
 
-                print(f"  -> Hit: {title}")
-                send_discord(title, code, link, source_name)
+                # Discord送信
+                send_discord_embed(title, code, link, source_name, image_url, date_str)
                 
                 new_sent_urls.append(link)
 
         except Exception as e:
-            print(f"Error checking {rss_url}: {e}")
+            print(f"Error: {e}")
             continue
 
     save_sent_data(new_sent_urls)
-    print("巡回終了")
+    print("Done.")
 
 if __name__ == "__main__":
-    if not DISCORD_WEBHOOK_URL:
-        print("WebHook URLが設定されていません")
-    else:
-        main()
+    main()
