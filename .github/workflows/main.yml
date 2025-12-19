@@ -1,0 +1,42 @@
+name: Coupon Bot Cron
+
+on:
+  schedule:
+    # 20分ごとに実行（GitHub Actionsの無料枠制限を考慮）
+    - cron: '*/20 * * * *'
+  workflow_dispatch: # 手動実行ボタンも有効化
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    # リポジトリへの書き込み権限を付与（data.json更新用）
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py
+
+      - name: Commit and push if data changed
+        run: |
+          git config --global user.name "CouponBot"
+          git config --global user.email "bot@example.com"
+          git add data.json
+          # 変更がない場合はエラーにならないようにする
+          git commit -m "Update sent data" || exit 0
+          git push
