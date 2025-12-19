@@ -12,17 +12,38 @@ DATA_FILE = "data.json"
 
 # 質の高い情報源リスト（ここを増やすと情報が増えます）
 RSS_URLS = [
-    # プレスリリース（公式情報なので最速・正確）
-    "https://prtimes.jp/index.rdf", 
-    # ガジェット・テック系のセール情報
+    # --- 【最強】公式プレスリリース（ここが一番早いです） ---
+    # 飲食・グルメのキャンペーン・クーポン（マック、スタバ、回転寿司など）
+    "https://prtimes.jp/gourmet.rdf",
+    # テクノロジー・ガジェット・アプリのセール情報
+    "https://prtimes.jp/technology.rdf",
+    "https://prtimes.jp/app.rdf",
+    # エンタメ・ゲームの無料配布やキャンペーン
+    "https://prtimes.jp/entertainment.rdf",
+
+    # --- 【厳選】ガジェット・PC・Amazonセール系 ---
+    # Apple製品やAmazonセールの速報に強い
+    "https://touchlab.jp/feed/",
+    # ガジェット全般、タイムセール情報
     "https://www.gizmodo.jp/index.xml",
+    # PC・スマホの特価情報、アプリセール
+    "https://corriente.top/feed/",
+    # 仕事効率化・ライフハック系（ソフトのセールなど）
     "https://www.lifehacker.jp/feed/index.xml",
-    # 総合ニュース（ここからセール記事だけ抜く）
-    "https://getnews.jp/feed", 
+
+    # --- 【生活】飲食・サブカル・激安系 ---
+    # ロケットニュース24（「〜食べ放題」「激安」などの体験記事が多い）
+    "https://rocketnews24.com/feed/",
+    # ゲームの無料配布（Epic Gamesなど）やSteamセール情報
+    "https://automaton-media.com/feed/",
 ]
 
 # 収集対象とするキーワード（これらがタイトルに含まれる場合のみ通知）
-TARGET_KEYWORDS = ["クーポン", "コード", "半額", "セール", "無料", "割引", "キャンペーン", "激安"]
+# キーワードを「激安」「無料」系に特化
+TARGET_KEYWORDS = [
+    "クーポン", "コード", "半額", "セール", "無料", "割引", 
+    "キャンペーン", "激安", "特価", "配布", "円OFF", "ポイント"
+]
 
 def load_sent_data():
     if os.path.exists(DATA_FILE):
